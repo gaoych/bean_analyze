@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bean 依赖链路图</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script defer src="/static/vendor/d3.v7.min.js"></script>
+    <script defer src="/static/script.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>Bean 依赖链路图</h1>
+      <p>
+        该页面会根据 <code>iuap-apdoc-basedoc.json</code> 中的依赖信息，展示每个 Bean 的调用
+        链路。请选择一个最外层的起点 Bean 以加载对应的链路图，或者加载全部数据（数量较大时可能比较慢）。
+      </p>
+    </header>
+    <main>
+      <section class="controls">
+        <div class="control-group">
+          <label for="root-select">选择最外层端点：</label>
+          <select id="root-select">
+            <option value="" selected disabled>加载中…</option>
+          </select>
+          <button id="load-root" type="button">加载链路</button>
+          <button id="load-all" type="button">加载全部</button>
+        </div>
+        <div class="control-group">
+          <label for="search-input">在当前视图中查找 Bean：</label>
+          <input id="search-input" type="search" placeholder="输入 Bean 名称或关键字" />
+          <button id="reset-view" type="button">重置视图</button>
+        </div>
+        <div class="hint">
+          <span class="legend-color red"></span>
+          <span>红色节点表示没有依赖的 Bean；</span>
+          <span class="legend-color green"></span>
+          <span>绿色节点表示最外层端点。</span>
+        </div>
+        <div class="status" id="status-message">正在加载起点列表…</div>
+      </section>
+      <section class="content">
+        <div id="graph-container">
+          <svg id="graph" role="img" aria-label="Bean 依赖链路图"></svg>
+          <div id="graph-placeholder">请选择一个起点并点击“加载链路”。</div>
+        </div>
+        <aside id="info-panel">
+          <section id="stats">
+            <h2>当前数据统计</h2>
+            <p><strong>节点数：</strong><span id="stat-nodes">0</span></p>
+            <p><strong>依赖关系：</strong><span id="stat-edges">0</span></p>
+            <p><strong>起点数量：</strong><span id="stat-roots">0</span></p>
+          </section>
+          <section id="details">
+            <h2>节点详情</h2>
+            <p>点击图中的节点查看详细信息。</p>
+          </section>
+          <section id="legend">
+            <h2>图例</h2>
+            <ul>
+              <li><span class="legend-color red"></span> 无依赖的 Bean（链路终点），会被标红。</li>
+              <li><span class="legend-color green"></span> 最外层起点 Bean。</li>
+              <li><span class="legend-color blue"></span> 具有依赖的普通 Bean。</li>
+              <li><span class="legend-color gray"></span> JSON 中未给出定义的依赖（外部 Bean）。</li>
+            </ul>
+          </section>
+        </aside>
+      </section>
+    </main>
+    <footer>
+      <p>
+        使用鼠标滚轮缩放、拖拽背景进行平移，拖动节点以调整布局。当前页面使用 D3.js 绘制力导图，如需导出请使用浏览器的保存功能。
+      </p>
+    </footer>
+  </body>
+</html>
