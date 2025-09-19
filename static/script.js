@@ -26,10 +26,49 @@ const selectors = {
   details: () => document.getElementById('details'),
 };
 
+const API_BASE = determineApiBase();
+const RUNNING_FROM_FILE = window.location.protocol === 'file:';
+
 document.addEventListener('DOMContentLoaded', () => {
   setupUI();
   loadRoots();
 });
+
+function determineApiBase() {
+  const globalConfigBase = window.APP_CONFIG?.apiBase;
+  if (globalConfigBase) {
+    return globalConfigBase.replace(/\/+$/, '');
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const explicitBase = params.get('apiBase');
+  if (explicitBase) {
+    return explicitBase.replace(/\/+$/, '');
+  }
+
+  const portParam = params.get('port');
+  if (portParam) {
+    return `http://localhost:${portParam}`;
+  }
+
+  if (window.location.origin && window.location.origin !== 'null') {
+    return '';
+  }
+
+  return 'http://localhost:8000';
+}
+
+function buildApiUrl(path) {
+  if (!path.startsWith('/')) {
+    throw new Error('API path must start with a leading slash.');
+  }
+
+  if (!API_BASE) {
+    return path;
+  }
+
+  return `${API_BASE}${path}`;
+}
 
 function setupUI() {
   selectors.loadRootButton().addEventListener('click', () => {
@@ -53,7 +92,7 @@ function setupUI() {
 async function loadRoots() {
   setStatus('正在加载起点列表…', 'info');
   try {
-    const response = await fetch('/roots');
+    const response = await fetch(buildApiUrl('/roots'));
     if (!response.ok) {
       throw new Error(`获取起点失败：${response.status}`);
     }
@@ -67,7 +106,17 @@ async function loadRoots() {
     }
   } catch (error) {
     console.error(error);
-    setStatus('加载起点列表失败，请检查后端服务。', 'error');
+    const rawBase = API_BASE || window.location.origin || 'http://localhost:8000';
+    const displayBase = !rawBase || rawBase === 'null' ? 'http://localhost:8000' : rawBase;
+    if (RUNNING_FROM_FILE) {
+      setStatus(
+        `加载起点列表失败。当前页面通过 file:// 打开，浏览器会阻止访问接口。请运行后端服务后在浏览器访问 ${displayBase}，` +
+          '如需指定端口，可在地址后加上 ?port=端口号。',
+        'error',
+      );
+    } else {
+      setStatus(`加载起点列表失败，请检查后端服务（${displayBase}）。`, 'error');
+    }
   }
 }
 
@@ -102,7 +151,9 @@ async function loadGraph(root) {
   setStatus(`正在加载 ${rootLabel} 的数据…`, 'info');
 
   try {
-    const url = root ? `/graph-data?root=${encodeURIComponent(root)}` : '/graph-data?root=all';
+    const url = buildApiUrl(
+      root ? `/graph-data?root=${encodeURIComponent(root)}` : '/graph-data?root=all',
+    );
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`服务返回错误：${response.status}`);
