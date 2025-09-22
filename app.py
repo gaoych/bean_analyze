@@ -164,7 +164,6 @@ def load_graph() -> Dict[str, object]:
 
 GRAPH = load_graph()
 
-
 def _parse_bool(value: Optional[str]) -> bool:
     """Return True if the string represents a truthy value."""
 
