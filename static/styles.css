@@ -188,6 +188,29 @@ main {
   color: var(--muted);
 }
 
+.category-group {
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.category-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: min(280px, 100%);
+}
+
+.category-options select {
+  min-width: 200px;
+  padding: 0.4rem 0.5rem;
+}
+
+.category-options .category-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 .controls .hint {
   display: flex;
   align-items: center;

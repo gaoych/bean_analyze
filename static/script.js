@@ -16,6 +16,8 @@ const state = {
   excludeThirdParty: false,
   availableThirdPartyPackages: [],
   selectedThirdPartyPackages: [],
+  availableCategories: [],
+  selectedCategories: [],
   searchTerm: '',
   searchMatches: [],
   searchIndex: -1,
@@ -33,6 +35,7 @@ const selectors = {
   excludeThirdPartyCheckbox: () => document.getElementById('exclude-third-party'),
   thirdPartyPackageContainer: () => document.getElementById('third-party-package-container'),
   thirdPartyPackageSelect: () => document.getElementById('third-party-packages'),
+  categorySelect: () => document.getElementById('category-filter'),
   statusMessage: () => document.getElementById('status-message'),
   placeholder: () => document.getElementById('graph-placeholder'),
   statNodes: () => document.getElementById('stat-nodes'),
@@ -99,6 +102,9 @@ function buildGraphDataUrl(root) {
     if (state.selectedThirdPartyPackages.length) {
       params.set('thirdPartyPackages', state.selectedThirdPartyPackages.join(','));
     }
+  }
+  if (state.selectedCategories.length) {
+    params.set('categories', state.selectedCategories.join(','));
   }
   return buildApiUrl(`/graph-data?${params.toString()}`);
 }
@@ -174,6 +180,23 @@ function setupUI() {
     });
   }
 
+  const categorySelect = selectors.categorySelect();
+  if (categorySelect) {
+    categorySelect.disabled = true;
+    categorySelect.addEventListener('change', async () => {
+      const selected = Array.from(categorySelect.selectedOptions)
+        .map((option) => option.value)
+        .filter(Boolean);
+      state.selectedCategories = selected;
+      await reloadDataAfterFilterChange({
+        messageWhenCleared: selected.length
+          ? '当前起点不属于所选分类，请选择其他起点。'
+          : '已恢复全部分类，请选择需要查看的起点。',
+        statusLevel: selected.length ? 'warn' : 'info',
+      });
+    });
+  }
+
   selectors.resetViewButton().addEventListener('click', resetView);
 }
 
@@ -193,6 +216,9 @@ async function loadRoots(options = {}) {
         params.set('thirdPartyPackages', state.selectedThirdPartyPackages.join(','));
       }
     }
+    if (state.selectedCategories.length) {
+      params.set('categories', state.selectedCategories.join(','));
+    }
     const url = params.toString() ? `/roots?${params.toString()}` : '/roots';
     const response = await fetch(buildApiUrl(url));
     if (!response.ok) {
@@ -202,7 +228,9 @@ async function loadRoots(options = {}) {
     state.roots = data.roots || [];
     state.unusedChains = data.unusedChains || [];
     state.availableThirdPartyPackages = data.thirdPartyPackages || [];
+    state.availableCategories = data.availableCategories || [];
     renderThirdPartyPackageOptions();
+    renderCategoryOptions();
     populateRootSelect(state.roots);
     if (select && preserveSelection && previousValue && state.roots.includes(previousValue)) {
       select.value = previousValue;
@@ -240,7 +268,9 @@ async function loadRoots(options = {}) {
     state.roots = [];
     state.unusedChains = [];
     state.availableThirdPartyPackages = [];
+    state.availableCategories = [];
     renderThirdPartyPackageOptions();
+    renderCategoryOptions();
     updateSearchNavButtons();
     resetStatsDisplay();
     return false;
@@ -327,6 +357,56 @@ function renderThirdPartyPackageOptions() {
   });
 }
 
+function renderCategoryOptions() {
+  const select = selectors.categorySelect();
+  if (!select) {
+    return;
+  }
+
+  const categories = state.availableCategories || [];
+  const availableValues = categories
+    .map((item) => item.category || item.name || item.id)
+    .filter(Boolean);
+
+  if (state.selectedCategories.length) {
+    state.selectedCategories = state.selectedCategories.filter((value) =>
+      availableValues.includes(value),
+    );
+  }
+
+  select.innerHTML = '';
+
+  if (!categories.length) {
+    const placeholder = document.createElement('option');
+    placeholder.textContent = '暂无分类';
+    placeholder.disabled = true;
+    select.appendChild(placeholder);
+    select.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  select.size = Math.min(10, Math.max(4, categories.length));
+
+  const selectedSet = new Set(state.selectedCategories);
+
+  categories.forEach((item) => {
+    const value = item.category || item.name || item.id;
+    if (!value) {
+      return;
+    }
+    const option = document.createElement('option');
+    option.value = value;
+    const count = typeof item.beanCount === 'number' ? item.beanCount : undefined;
+    option.textContent =
+      count !== undefined
+        ? `${value}（${count.toLocaleString('zh-CN')} 个 Bean）`
+        : value;
+    option.selected = selectedSet.has(value);
+    select.appendChild(option);
+  });
+}
+
 async function reloadDataAfterFilterChange(options = {}) {
   const { messageWhenCleared, statusLevel = 'warn' } = options;
   const previousRoot = state.currentRoot;
@@ -386,6 +466,10 @@ async function loadGraph(root) {
     if (Array.isArray(data.thirdPartyPackages)) {
       state.availableThirdPartyPackages = data.thirdPartyPackages;
       renderThirdPartyPackageOptions();
+    }
+    if (Array.isArray(data.availableCategories)) {
+      state.availableCategories = data.availableCategories;
+      renderCategoryOptions();
     }
     buildGraph(data);
     updateStats(data);

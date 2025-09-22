@@ -51,6 +51,7 @@ def load_graph() -> Dict[str, object]:
 
     dependencies_map: Dict[str, List[str]] = {}
     metadata_map: Dict[str, Dict[str, object]] = {}
+    category_to_nodes: Dict[str, Set[str]] = defaultdict(set)
 
     for bean in bean_definitions:
         name = bean.get("name")
@@ -82,6 +83,9 @@ def load_graph() -> Dict[str, object]:
             "thirdPartyPackage": third_party_package,
         }
 
+        for category in metadata_map[name]["categories"] or []:
+            category_to_nodes[category].add(name)
+
     # Add placeholder nodes for dependencies that do not have their own definitions.
     for bean_name, dependencies in list(dependencies_map.items()):
         for dependency in dependencies:
@@ -105,10 +109,14 @@ def load_graph() -> Dict[str, object]:
     third_party_nodes: Set[str] = set()
     third_party_package_to_nodes: Dict[str, Set[str]] = defaultdict(set)
     node_to_third_party_package: Dict[str, Optional[str]] = {}
+    node_to_categories: Dict[str, Tuple[str, ...]] = {}
 
     for bean_name, metadata in metadata_map.items():
         package_name = metadata.get("thirdPartyPackage")
         node_to_third_party_package[bean_name] = package_name
+        categories = tuple(metadata.get("categories", []) or [])
+        node_to_categories[bean_name] = categories
+        
         if metadata.get("isThirdPartyBean"):
             third_party_nodes.add(bean_name)
             if package_name:
@@ -119,6 +127,12 @@ def load_graph() -> Dict[str, object]:
         for package, nodes in third_party_package_to_nodes.items()
     ]
     third_party_packages_list.sort(key=lambda item: (-item["beanCount"], item["package"]))
+
+    categories_list = [
+        {"category": category, "beanCount": len(nodes)}
+        for category, nodes in category_to_nodes.items()
+    ]
+    categories_list.sort(key=lambda item: (-item["beanCount"], item["category"]))
 
     incoming_map: Dict[str, Set[str]] = defaultdict(set)
     for bean_name, dependencies in dependencies_map.items():
@@ -208,6 +222,12 @@ def load_graph() -> Dict[str, object]:
             for package, node_names in third_party_package_to_nodes.items()
         },
         "node_third_party_package": node_to_third_party_package,
+        "available_categories": categories_list,
+        "category_nodes": {
+            category: frozenset(node_names)
+            for category, node_names in category_to_nodes.items()
+        },
+        "node_categories": node_to_categories,
     }
 
 
@@ -243,10 +263,17 @@ def build_filtered_graph(
     *,
     exclude_third_party: bool = False,
     third_party_packages: Optional[Iterable[str]] = None,
+    categories: Optional[Iterable[str]] = None,
 ) -> Dict[str, object]:
     """Return a graph view with optional filters applied."""
 
-    if not exclude_spring and not exclude_third_party:
+    selected_categories: Set[str] = {
+        category
+        for category in (categories or [])
+        if category is not None and category != ""
+    }
+
+    if not exclude_spring and not exclude_third_party and not selected_categories:
         return GRAPH
 
     excluded_nodes: Set[str] = set()
@@ -263,6 +290,20 @@ def build_filtered_graph(
                 )
         else:
             excluded_nodes.update(GRAPH.get("third_party_nodes", set()))
+
+    if selected_categories:
+        allowed_nodes: Set[str] = set()
+        category_nodes_map = GRAPH.get("category_nodes", {})
+        for category in selected_categories:
+            allowed_nodes.update(category_nodes_map.get(category, set()))
+        if allowed_nodes:
+            excluded_nodes.update(
+                name
+                for name in GRAPH["nodes"].keys()
+                if name not in allowed_nodes
+            )
+        else:
+            excluded_nodes.update(GRAPH["nodes"].keys())
 
     if not excluded_nodes:
         return GRAPH
@@ -305,6 +346,24 @@ def build_filtered_graph(
 
         for dependency in deps:
             edges.append({"source": bean_name, "target": dependency})
+
+    node_categories_map = GRAPH.get("node_categories", {})
+    category_counts: Dict[str, int] = defaultdict(int)
+    filtered_category_nodes: Dict[str, Set[str]] = defaultdict(set)
+    for bean_name in nodes:
+        for category in node_categories_map.get(bean_name, ()):  # type: ignore[arg-type]
+            category_counts[category] += 1
+            filtered_category_nodes[category].add(bean_name)
+
+    available_categories = [
+        {"category": category, "beanCount": count}
+        for category, count in category_counts.items()
+    ]
+    available_categories.sort(key=lambda item: (-item["beanCount"], item["category"]))
+    filtered_category_nodes_map = {
+        category: frozenset(node_names)
+        for category, node_names in filtered_category_nodes.items()
+    }
 
     roots = sorted(name for name, node in nodes.items() if node["isRoot"])
 
@@ -359,6 +418,9 @@ def build_filtered_graph(
         "third_party_packages": GRAPH["third_party_packages"],
         "third_party_package_nodes": GRAPH["third_party_package_nodes"],
         "node_third_party_package": GRAPH["node_third_party_package"],
+        "available_categories": available_categories,
+        "category_nodes": filtered_category_nodes_map,
+        "node_categories": GRAPH["node_categories"],
     }
 
 
@@ -367,6 +429,7 @@ def get_graph(
     exclude_spring: bool,
     exclude_third_party: bool,
     third_party_packages: Tuple[str, ...],
+    categories: Tuple[str, ...],
 ) -> Dict[str, object]:
     """Return cached graph data with optional filters applied."""
 
@@ -374,6 +437,7 @@ def get_graph(
         exclude_spring,
         exclude_third_party=exclude_third_party,
         third_party_packages=third_party_packages,
+        categories=categories,
     )
 
 
@@ -383,13 +447,22 @@ def build_subgraph(
     exclude_spring: bool = False,
     exclude_third_party: bool = False,
     third_party_packages: Optional[Iterable[str]] = None,
+    categories: Optional[Iterable[str]] = None,
 ) -> Dict[str, object]:
     """Return the graph filtered to nodes reachable from the given root."""
 
     third_party_tuple: Tuple[str, ...] = tuple(
         sorted(third_party_packages) if third_party_packages else ()
     )
-    graph = get_graph(exclude_spring, exclude_third_party, third_party_tuple)
+    category_tuple: Tuple[str, ...] = tuple(
+        sorted({item for item in (categories or []) if item})
+    )
+    graph = get_graph(
+        exclude_spring,
+        exclude_third_party,
+        third_party_tuple,
+        category_tuple,
+    )
 
     if not root or root.lower() == "all":
         nodes = list(graph["nodes"].values())
@@ -406,6 +479,7 @@ def build_subgraph(
                 "unusedRootCount": len(graph["unused_roots_list"]),
             },
             "thirdPartyPackages": graph["third_party_packages"],
+            "availableCategories": graph["available_categories"],
         }
 
     if root not in graph["nodes"]:
@@ -453,6 +527,7 @@ def build_subgraph(
         "isUnusedChain": chain_summary["isUnused"],
         "chainSummary": chain_summary,
         "thirdPartyPackages": graph["third_party_packages"],
+        "availableCategories": graph["available_categories"],
     }
 
 
@@ -467,12 +542,14 @@ class GraphRequestHandler(SimpleHTTPRequestHandler):
             exclude_spring = _parse_bool((params.get("excludeSpring") or [None])[0])
             exclude_third_party = _parse_bool((params.get("excludeThirdParty") or [None])[0])
             third_party_packages = _parse_list(params.get("thirdPartyPackages"))
+            categories = _parse_list(params.get("categories"))
             try:
                 payload = build_subgraph(
                     root,
                     exclude_spring=exclude_spring,
                     exclude_third_party=exclude_third_party,
                     third_party_packages=third_party_packages,
+                    categories=categories,
                 )
             except KeyError:
                 self.send_error(HTTPStatus.NOT_FOUND, f"Unknown bean '{root}'")
@@ -493,11 +570,20 @@ class GraphRequestHandler(SimpleHTTPRequestHandler):
             third_party_packages = tuple(
                 sorted(_parse_list(params.get("thirdPartyPackages")))
             )
-            graph = get_graph(exclude_spring, exclude_third_party, third_party_packages)
+            categories = tuple(
+                sorted({value for value in _parse_list(params.get("categories")) if value})
+            )
+            graph = get_graph(
+                exclude_spring,
+                exclude_third_party,
+                third_party_packages,
+                categories,
+            )
             payload = {
                 "roots": graph["roots"],
                 "unusedChains": graph["unused_roots_list"],
                 "thirdPartyPackages": graph["third_party_packages"],
+                "availableCategories": graph["available_categories"],
             }
             response = json.dumps(payload).encode("utf-8")
             self.send_response(HTTPStatus.OK)
