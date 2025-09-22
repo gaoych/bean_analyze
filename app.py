@@ -135,6 +135,7 @@ def load_graph() -> Dict[str, object]:
 
     unused_roots.sort(key=lambda item: (-item["nodeCount"], item["root"]))
 
+
     return {
         "nodes": nodes,
         "edges": edges,
