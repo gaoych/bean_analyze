@@ -53,10 +53,17 @@
           </div>
         </div>
         <div class="control-group category-group">
-          <label for="category-filter">按 Bean 分类筛选：</label>
-          <div class="category-options">
-            <select id="category-filter" multiple size="6"></select>
-            <p class="hint category-hint">按住 Ctrl/Cmd 可多选；不选择任何分类时将展示全部 Bean。</p>
+          <span class="group-label">按 Bean 分类筛选：</span>
+          <div class="category-controls">
+            <div
+              class="category-options"
+              id="category-options"
+              role="group"
+              aria-label="按 Bean 分类筛选"
+            >
+              <p class="empty">正在加载分类…</p>
+            </div>
+            <p class="hint category-hint">勾选一个或多个分类，留空将展示全部 Bean。</p>
           </div>
         </div>
         <div class="hint">

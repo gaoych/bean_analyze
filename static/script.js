@@ -35,7 +35,7 @@ const selectors = {
   excludeThirdPartyCheckbox: () => document.getElementById('exclude-third-party'),
   thirdPartyPackageContainer: () => document.getElementById('third-party-package-container'),
   thirdPartyPackageSelect: () => document.getElementById('third-party-packages'),
-  categorySelect: () => document.getElementById('category-filter'),
+  categoryOptionsContainer: () => document.getElementById('category-options'),
   statusMessage: () => document.getElementById('status-message'),
   placeholder: () => document.getElementById('graph-placeholder'),
   statNodes: () => document.getElementById('stat-nodes'),
@@ -180,12 +180,18 @@ function setupUI() {
     });
   }
 
-  const categorySelect = selectors.categorySelect();
-  if (categorySelect) {
-    categorySelect.disabled = true;
-    categorySelect.addEventListener('change', async () => {
-      const selected = Array.from(categorySelect.selectedOptions)
-        .map((option) => option.value)
+  const categoryOptionsContainer = selectors.categoryOptionsContainer();
+  if (categoryOptionsContainer) {
+    categoryOptionsContainer.addEventListener('change', async (event) => {
+      const target = event.target;
+      if (!target || typeof target.matches !== 'function' || !target.matches('input[type="checkbox"]')) {
+        return;
+      }
+
+      const selected = Array.from(
+        categoryOptionsContainer.querySelectorAll('input[type="checkbox"]:checked'),
+      )
+        .map((input) => input.value)
         .filter(Boolean);
       state.selectedCategories = selected;
       await reloadDataAfterFilterChange({
@@ -358,8 +364,8 @@ function renderThirdPartyPackageOptions() {
 }
 
 function renderCategoryOptions() {
-  const select = selectors.categorySelect();
-  if (!select) {
+  const container = selectors.categoryOptionsContainer();
+  if (!container) {
     return;
   }
 
@@ -374,36 +380,39 @@ function renderCategoryOptions() {
     );
   }
 
-  select.innerHTML = '';
-
-  if (!categories.length) {
-    const placeholder = document.createElement('option');
-    placeholder.textContent = '暂无分类';
-    placeholder.disabled = true;
-    select.appendChild(placeholder);
-    select.disabled = true;
-    return;
-  }
-
-  select.disabled = false;
-  select.size = Math.min(10, Math.max(4, categories.length));
+  container.innerHTML = '';
 
   const selectedSet = new Set(state.selectedCategories);
 
-  categories.forEach((item) => {
+  if (!categories.length) {
+    const empty = document.createElement('p');
+    empty.className = 'empty';
+    empty.textContent = '暂无分类';
+    container.appendChild(empty);
+    return;
+  }
+
+  categories.forEach((item, index) => {
     const value = item.category || item.name || item.id;
     if (!value) {
       return;
     }
-    const option = document.createElement('option');
-    option.value = value;
+    const label = document.createElement('label');
+    label.className = 'checkbox category-option';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.value = value;
+    checkbox.checked = selectedSet.has(value);
+    checkbox.id = `category-filter-${index}`;
+    const text = document.createElement('span');
     const count = typeof item.beanCount === 'number' ? item.beanCount : undefined;
-    option.textContent =
+    text.textContent =
       count !== undefined
         ? `${value}（${count.toLocaleString('zh-CN')} 个 Bean）`
         : value;
-    option.selected = selectedSet.has(value);
-    select.appendChild(option);
+    label.appendChild(checkbox);
+    label.appendChild(text);
+    container.appendChild(label);
   });
 }
 

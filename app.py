@@ -116,7 +116,6 @@ def load_graph() -> Dict[str, object]:
         node_to_third_party_package[bean_name] = package_name
         categories = tuple(metadata.get("categories", []) or [])
         node_to_categories[bean_name] = categories
-        
         if metadata.get("isThirdPartyBean"):
             third_party_nodes.add(bean_name)
             if package_name:
