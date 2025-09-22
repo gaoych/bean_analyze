@@ -26,10 +26,21 @@
           <button id="load-root" type="button">加载链路</button>
           <button id="load-all" type="button">加载全部</button>
         </div>
-        <div class="control-group">
+        <div class="control-group search-group">
           <label for="search-input">在当前视图中查找 Bean：</label>
-          <input id="search-input" type="search" placeholder="输入 Bean 名称或关键字" />
+          <div class="search-controls">
+            <input id="search-input" type="search" placeholder="输入 Bean 名称或关键字" />
+            <div class="search-buttons">
+              <button id="search-prev" class="secondary" type="button" disabled>上一个</button>
+              <button id="search-next" class="secondary" type="button" disabled>下一个</button>
+            </div>
+          </div>
           <button id="reset-view" type="button">重置视图</button>
+        </div>
+        <div class="control-group toggle-group">
+          <label class="checkbox">
+            <input id="exclude-spring" type="checkbox" /> 排除 Spring 自身 Bean
+          </label>
         </div>
         <div class="hint">
           <span class="legend-color red"></span>

@@ -72,6 +72,10 @@ main {
   gap: 0.5rem;
 }
 
+.search-group {
+  align-items: stretch;
+}
+
 .controls label {
   font-weight: 600;
 }
@@ -93,6 +97,13 @@ main {
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 
+.controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+  transform: none;
+  box-shadow: none;
+}
+
 .controls button:hover {
   transform: translateY(-1px);
   box-shadow: 0 6px 18px rgba(37, 99, 235, 0.2);
@@ -100,6 +111,52 @@ main {
 
 .controls input {
   min-width: 200px;
+}
+
+.search-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.search-controls input {
+  flex: 1 1 auto;
+  min-width: 220px;
+}
+
+.search-buttons {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.controls button.secondary {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  box-shadow: none;
+}
+
+.controls button.secondary:hover {
+  transform: none;
+  box-shadow: 0 6px 18px rgba(37, 99, 235, 0.15);
+}
+
+.controls button.secondary:disabled {
+  background: #e5e7eb;
+  color: var(--muted);
+  border-color: var(--border);
+}
+
+.toggle-group .checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 600;
+}
+
+.toggle-group input[type='checkbox'] {
+  width: 1.1rem;
+  height: 1.1rem;
 }
 
 .controls .hint {
@@ -332,5 +389,19 @@ footer {
   .controls input {
     min-width: unset;
     width: 100%;
+  }
+
+  .search-controls {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .search-buttons {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .search-buttons button {
+    flex: 1;
   }
 }

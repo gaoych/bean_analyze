@@ -12,6 +12,10 @@ const state = {
   highlightedNode: null,
   unusedChains: [],
   chainSummary: null,
+  excludeSpring: false,
+  searchTerm: '',
+  searchMatches: [],
+  searchIndex: -1,
 };
 
 const selectors = {
@@ -20,6 +24,9 @@ const selectors = {
   loadAllButton: () => document.getElementById('load-all'),
   searchInput: () => document.getElementById('search-input'),
   resetViewButton: () => document.getElementById('reset-view'),
+  searchPrevButton: () => document.getElementById('search-prev'),
+  searchNextButton: () => document.getElementById('search-next'),
+  excludeSpringCheckbox: () => document.getElementById('exclude-spring'),
   statusMessage: () => document.getElementById('status-message'),
   placeholder: () => document.getElementById('graph-placeholder'),
   statNodes: () => document.getElementById('stat-nodes'),
@@ -75,6 +82,15 @@ function buildApiUrl(path) {
   return `${API_BASE}${path}`;
 }
 
+function buildGraphDataUrl(root) {
+  const params = new URLSearchParams();
+  params.set('root', root ? root : 'all');
+  if (state.excludeSpring) {
+    params.set('excludeSpring', 'true');
+  }
+  return buildApiUrl(`/graph-data?${params.toString()}`);
+}
+
 function setupUI() {
   selectors.loadRootButton().addEventListener('click', () => {
     const select = selectors.rootSelect();
@@ -90,14 +106,73 @@ function setupUI() {
     loadGraph(null);
   });
 
-  selectors.searchInput().addEventListener('input', handleSearch);
+  selectors.searchInput().addEventListener('input', handleSearchInput);
+  const prevButton = selectors.searchPrevButton();
+  if (prevButton) {
+    prevButton.addEventListener('click', () => stepSearch(-1));
+  }
+  const nextButton = selectors.searchNextButton();
+  if (nextButton) {
+    nextButton.addEventListener('click', () => stepSearch(1));
+  }
+
+  const excludeCheckbox = selectors.excludeSpringCheckbox();
+  if (excludeCheckbox) {
+    excludeCheckbox.addEventListener('change', async (event) => {
+      state.excludeSpring = event.target.checked;
+      const previousRoot = state.currentRoot;
+      const loaded = await loadRoots({ preserveSelection: true });
+      if (!loaded) {
+        return;
+      }
+
+      const select = selectors.rootSelect();
+      if (previousRoot && state.roots.includes(previousRoot)) {
+        if (select) {
+          select.value = previousRoot;
+        }
+        loadGraph(previousRoot);
+        return;
+      }
+
+      if (!previousRoot && state.graphData) {
+        loadGraph(null);
+        return;
+      }
+
+      state.currentRoot = null;
+      state.graphData = null;
+      if (select) {
+        select.value = '';
+      }
+      clearGraphView('当前过滤条件下未加载任何链路，请选择起点。');
+      state.chainSummary = null;
+      updateChainSummary();
+      resetStatsDisplay();
+      renderUnusedChains();
+      if (state.excludeSpring) {
+        setStatus('当前起点属于 Spring Bean，已被过滤。请选择其他起点。', 'warn');
+      } else {
+        setStatus('已重新包含 Spring Bean，请选择需要查看的起点。', 'info');
+      }
+    });
+  }
+
   selectors.resetViewButton().addEventListener('click', resetView);
 }
 
-async function loadRoots() {
+async function loadRoots(options = {}) {
+  const { preserveSelection = false } = options;
+  const select = selectors.rootSelect();
+  const previousValue = preserveSelection && select ? select.value : '';
   setStatus('正在加载起点列表…', 'info');
   try {
-    const response = await fetch(buildApiUrl('/roots'));
+    const params = new URLSearchParams();
+    if (state.excludeSpring) {
+      params.set('excludeSpring', 'true');
+    }
+    const url = params.toString() ? `/roots?${params.toString()}` : '/roots';
+    const response = await fetch(buildApiUrl(url));
     if (!response.ok) {
       throw new Error(`获取起点失败：${response.status}`);
     }
@@ -105,17 +180,26 @@ async function loadRoots() {
     state.roots = data.roots || [];
     state.unusedChains = data.unusedChains || [];
     populateRootSelect(state.roots);
+    if (select && preserveSelection && previousValue && state.roots.includes(previousValue)) {
+      select.value = previousValue;
+    }
     renderUnusedChains();
     const unusedCountEl = selectors.statUnused();
     if (unusedCountEl) {
       unusedCountEl.textContent = state.unusedChains.length.toLocaleString('zh-CN');
     }
+    const statRootsEl = selectors.statRoots();
+    if (statRootsEl) {
+      statRootsEl.textContent = state.roots.length.toLocaleString('zh-CN');
+    }
     updateChainSummary();
+    updateSearchNavButtons();
     if (state.roots.length) {
       setStatus('请选择一个最外层端点并点击“加载链路”。', 'info');
     } else {
       setStatus('未在数据中找到起点。', 'warn');
     }
+    return true;
   } catch (error) {
     console.error(error);
     const rawBase = API_BASE || window.location.origin || 'http://localhost:8000';
@@ -129,6 +213,11 @@ async function loadRoots() {
     } else {
       setStatus(`加载起点列表失败，请检查后端服务（${displayBase}）。`, 'error');
     }
+    state.roots = [];
+    state.unusedChains = [];
+    updateSearchNavButtons();
+    resetStatsDisplay();
+    return false;
   }
 }
 
@@ -161,11 +250,12 @@ function populateRootSelect(roots) {
 async function loadGraph(root) {
   const rootLabel = root ? `起点 ${root}` : '全部节点';
   setStatus(`正在加载 ${rootLabel} 的数据…`, 'info');
+  state.searchMatches = [];
+  state.searchIndex = -1;
+  updateSearchNavButtons();
 
   try {
-    const url = buildApiUrl(
-      root ? `/graph-data?root=${encodeURIComponent(root)}` : '/graph-data?root=all',
-    );
+    const url = buildGraphDataUrl(root);
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(`服务返回错误：${response.status}`);
@@ -194,10 +284,44 @@ async function loadGraph(root) {
       );
     }
     setStatus(messageParts.join(' '), 'success');
+    if (state.searchTerm) {
+      applySearchTerm({ resetIndex: true, centerOnMatch: false });
+    } else {
+      updateSearchNavButtons();
+    }
   } catch (error) {
     console.error(error);
     setStatus('加载链路数据失败，请查看控制台日志。', 'error');
   }
+}
+
+function clearGraphView(message) {
+  if (state.simulation) {
+    state.simulation.stop();
+    state.simulation = null;
+  }
+
+  const svg = d3.select('#graph');
+  svg.selectAll('*').remove();
+  state.svg = svg;
+  state.zoom = null;
+
+  const placeholder = selectors.placeholder();
+  if (placeholder) {
+    placeholder.textContent = message || '请选择一个起点并点击“加载链路”。';
+    placeholder.style.display = 'grid';
+  }
+
+  state.nodeSelection = null;
+  state.linkSelection = null;
+  state.labelSelection = null;
+  state.nodeById = new Map();
+  state.highlightedNode = null;
+  state.searchMatches = [];
+  state.searchIndex = -1;
+  updateSearchNavButtons();
+  highlightNode(null);
+  showDetails();
 }
 
 function buildGraph(data) {
@@ -367,6 +491,16 @@ function updateStats(data) {
   }
 }
 
+function resetStatsDisplay() {
+  selectors.statNodes().textContent = '0';
+  selectors.statEdges().textContent = '0';
+  selectors.statRoots().textContent = state.roots.length.toLocaleString('zh-CN');
+  const unusedCountEl = selectors.statUnused();
+  if (unusedCountEl) {
+    unusedCountEl.textContent = state.unusedChains.length.toLocaleString('zh-CN');
+  }
+}
+
 function renderUnusedChains() {
   const container = selectors.unusedList();
   if (!container) {
@@ -455,32 +589,116 @@ function updateChainSummary() {
   `;
 }
 
-function handleSearch() {
-  const term = selectors.searchInput().value.trim().toLowerCase();
+function handleSearchInput() {
+  const input = selectors.searchInput();
+  if (!input) {
+    return;
+  }
+  state.searchTerm = input.value.trim();
+
   if (!state.nodeSelection) {
+    state.searchMatches = [];
+    state.searchIndex = -1;
+    updateSearchNavButtons();
+    if (state.searchTerm) {
+      setStatus('请先加载链路数据。', 'warn');
+    } else {
+      setStatus('输入关键字以在当前视图中查找 Bean。', 'info');
+    }
     return;
   }
 
-  let firstMatch = null;
+  applySearchTerm({ resetIndex: true, centerOnMatch: true });
+}
+
+function applySearchTerm(options = {}) {
+  const { resetIndex = false, centerOnMatch = false } = options;
+
+  if (!state.nodeSelection) {
+    state.searchMatches = [];
+    state.searchIndex = -1;
+    updateSearchNavButtons();
+    return;
+  }
+
+  const term = state.searchTerm.toLowerCase();
+  const hasTerm = Boolean(term);
+  const matches = [];
+
   state.nodeSelection.select('circle').classed('matched', (d) => {
-    const match = term && d.id.toLowerCase().includes(term);
-    if (match && !firstMatch) {
-      firstMatch = d;
+    const match = hasTerm && d.id.toLowerCase().includes(term);
+    if (match) {
+      matches.push(d.id);
     }
     return match;
   });
 
-  state.nodeSelection.select('text').classed('matched', (d) => term && d.id.toLowerCase().includes(term));
+  state.nodeSelection
+    .select('text')
+    .classed('matched', (d) => hasTerm && d.id.toLowerCase().includes(term));
 
-  if (term && firstMatch) {
-    highlightNode(firstMatch.id, true);
-    showDetails(firstMatch);
-    setStatus(`找到匹配项：${firstMatch.id}`, 'success');
-  } else if (term) {
+  state.searchMatches = matches;
+  if (resetIndex) {
+    state.searchIndex = matches.length ? 0 : -1;
+  } else if (state.searchIndex >= matches.length) {
+    state.searchIndex = matches.length ? matches.length - 1 : -1;
+  }
+
+  updateSearchNavButtons();
+
+  if (hasTerm && matches.length) {
+    if (state.searchIndex < 0) {
+      state.searchIndex = 0;
+    }
+    const nodeId = state.searchMatches[state.searchIndex];
+    highlightNode(nodeId, centerOnMatch);
+    const node = state.nodeById.get(nodeId);
+    if (node) {
+      showDetails(node);
+    }
+    setStatus(`找到匹配项 (${state.searchIndex + 1}/${matches.length})：${nodeId}`, 'success');
+  } else if (hasTerm) {
+    highlightNode(null);
     setStatus('未找到匹配的 Bean。', 'warn');
   } else {
     highlightNode(null);
     setStatus('输入关键字以在当前视图中查找 Bean。', 'info');
+  }
+}
+
+function stepSearch(offset) {
+  if (!state.nodeSelection || !state.searchMatches.length) {
+    if (state.searchTerm) {
+      setStatus('未找到匹配的 Bean。', 'warn');
+    } else {
+      setStatus('请输入搜索关键字后再跳转。', 'info');
+    }
+    return;
+  }
+
+  const total = state.searchMatches.length;
+  if (state.searchIndex < 0) {
+    state.searchIndex = 0;
+  }
+  state.searchIndex = (state.searchIndex + offset + total) % total;
+  const nodeId = state.searchMatches[state.searchIndex];
+  highlightNode(nodeId, true);
+  const node = state.nodeById.get(nodeId);
+  if (node) {
+    showDetails(node);
+  }
+  setStatus(`查看匹配项 (${state.searchIndex + 1}/${total})：${nodeId}`, 'success');
+}
+
+function updateSearchNavButtons() {
+  const hasMatches = Boolean(state.nodeSelection) && state.searchMatches.length > 0;
+  const prev = selectors.searchPrevButton();
+  const next = selectors.searchNextButton();
+  if (prev) {
+    prev.disabled = !hasMatches;
+  }
+  if (next) {
+    next.disabled = !hasMatches;
   }
 }
 
@@ -585,6 +803,14 @@ function renderRelationList(items, type) {
 
 function resetView() {
   selectors.searchInput().value = '';
+  state.searchTerm = '';
+  state.searchMatches = [];
+  state.searchIndex = -1;
+  if (state.nodeSelection) {
+    state.nodeSelection.select('circle').classed('matched', false);
+    state.nodeSelection.select('text').classed('matched', false);
+  }
+  updateSearchNavButtons();
   highlightNode(null);
   setStatus('视图已重置。', 'info');
   if (state.svg && state.zoom) {

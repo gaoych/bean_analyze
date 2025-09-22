@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections import defaultdict, deque
-from functools import partial
+from functools import lru_cache, partial
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
@@ -44,6 +44,12 @@ def load_graph() -> Dict[str, object]:
         dependencies = _normalize_dependency_list(bean.get("dependencies"))
         dependencies_map[name] = dependencies
 
+        source_value = bean.get("source", "")
+        is_spring = bool(
+            (source_value and source_value.lower().startswith("spring"))
+            or (name and name.startswith("org.springframework"))
+        )
+
         metadata_map[name] = {
             "name": name,
             "type": bean.get("type", ""),
@@ -52,6 +58,8 @@ def load_graph() -> Dict[str, object]:
             "source": bean.get("source", ""),
             "definitionSource": bean.get("definitionSource", ""),
             "isAdditionalBean": bean.get("isAdditionalBean", False),
+            "additionalBeanSource": bean.get("additionalBeanSource", ""),
+            "isSpringBean": is_spring,
         }
 
     # Add placeholder nodes for dependencies that do not have their own definitions.
@@ -67,7 +75,9 @@ def load_graph() -> Dict[str, object]:
                     "source": "Unknown",
                     "definitionSource": "",
                     "isAdditionalBean": False,
+                    "additionalBeanSource": "",
                     "missing": True,
+                    "isSpringBean": False,
                 }
 
     incoming_map: Dict[str, Set[str]] = defaultdict(set)
@@ -91,6 +101,7 @@ def load_graph() -> Dict[str, object]:
             "isRoot": len(incoming_map.get(bean_name, set())) == 0,
             "missing": metadata.get("missing", False),
             "metadata": metadata,
+            "isSpringBean": metadata.get("isSpringBean", False),
         }
         nodes[bean_name] = node
 
@@ -135,6 +146,7 @@ def load_graph() -> Dict[str, object]:
 
     unused_roots.sort(key=lambda item: (-item["nodeCount"], item["root"]))
 
+    spring_nodes = {name for name, node in nodes.items() if node.get("isSpringBean")}
 
     return {
         "nodes": nodes,
@@ -146,31 +158,148 @@ def load_graph() -> Dict[str, object]:
         "chain_leaf_counts": chain_leaf_counts,
         "unused_roots_list": unused_roots,
         "unused_roots_lookup": unused_roots_lookup,
+        "spring_nodes": spring_nodes,
     }
 
 
 GRAPH = load_graph()
 
+def _parse_bool(value: Optional[str]) -> bool:
+    """Return True if the string represents a truthy value."""
 
-def build_subgraph(root: Optional[str]) -> Dict[str, object]:
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    return normalized in {"1", "true", "yes", "on"}
+
+
+def build_filtered_graph(exclude_spring: bool) -> Dict[str, object]:
+    """Return a graph view with optional filters applied."""
+
+    if not exclude_spring:
+        return GRAPH
+
+    excluded_nodes = GRAPH.get("spring_nodes", set())
+    if not excluded_nodes:
+        return GRAPH
+
+    dependencies: Dict[str, List[str]] = {}
+    incoming: Dict[str, Set[str]] = defaultdict(set)
+
+    for bean_name, deps in GRAPH["dependencies"].items():
+        if bean_name in excluded_nodes:
+            continue
+
+        filtered_deps = [dep for dep in deps if dep not in excluded_nodes]
+        dependencies[bean_name] = filtered_deps
+
+        for dependency in filtered_deps:
+            incoming[dependency].add(bean_name)
+        incoming.setdefault(bean_name, set())
+
+    nodes: Dict[str, Dict[str, object]] = {}
+    edges: List[Dict[str, str]] = []
+
+    for bean_name, deps in dependencies.items():
+        base = GRAPH["nodes"][bean_name]
+        dependents = sorted(incoming.get(bean_name, set()))
+        node = {
+            "id": bean_name,
+            "label": base["label"],
+            "dependencies": list(deps),
+            "dependents": dependents,
+            "hasDependencies": bool(deps),
+            "dependentCount": len(dependents),
+            "isRoot": len(dependents) == 0,
+            "missing": base.get("missing", False),
+            "metadata": base.get("metadata", {}),
+            "isSpringBean": base.get("isSpringBean", False),
+        }
+        nodes[bean_name] = node
+
+        for dependency in deps:
+            edges.append({"source": bean_name, "target": dependency})
+
+    roots = sorted(name for name, node in nodes.items() if node["isRoot"])
+
+    chain_nodes_map: Dict[str, Set[str]] = {}
+    chain_leaf_counts: Dict[str, int] = {}
+    unused_roots: List[Dict[str, object]] = []
+    unused_lookup: Dict[str, Dict[str, object]] = {}
+
+    for root in roots:
+        visited: Set[str] = set()
+        queue: deque[str] = deque([root])
+
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            for dependency in dependencies.get(current, []):
+                if dependency not in visited:
+                    queue.append(dependency)
+
+        chain_nodes_map[root] = visited
+        leaf_count = sum(1 for node in visited if not dependencies.get(node))
+        chain_leaf_counts[root] = leaf_count
+
+        has_external_usage = False
+        for node_name in visited:
+            dependents = incoming.get(node_name, set())
+            if any(dependent not in visited for dependent in dependents):
+                has_external_usage = True
+                break
+
+        if not has_external_usage:
+            info = {"root": root, "nodeCount": len(visited), "leafCount": leaf_count}
+            unused_roots.append(info)
+            unused_lookup[root] = info
+
+    unused_roots.sort(key=lambda item: (-item["nodeCount"], item["root"]))
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "roots": roots,
+        "dependencies": dependencies,
+        "incoming": incoming,
+        "chain_nodes": chain_nodes_map,
+        "chain_leaf_counts": chain_leaf_counts,
+        "unused_roots_list": unused_roots,
+        "unused_roots_lookup": unused_lookup,
+        "spring_nodes": set(),
+    }
+
+
+@lru_cache(maxsize=2)
+def get_graph(exclude_spring: bool) -> Dict[str, object]:
+    """Return cached graph data with optional filters applied."""
+
+    return build_filtered_graph(exclude_spring)
+
+
+def build_subgraph(root: Optional[str], *, exclude_spring: bool = False) -> Dict[str, object]:
     """Return the graph filtered to nodes reachable from the given root."""
+    graph = get_graph(exclude_spring)
+
     if not root or root.lower() == "all":
-        nodes = list(GRAPH["nodes"].values())
+        nodes = list(graph["nodes"].values())
         leaf_count = sum(1 for node in nodes if not node["hasDependencies"])
         return {
             "nodes": nodes,
-            "edges": GRAPH["edges"],
-            "roots": GRAPH["roots"],
+            "edges": graph["edges"],
+            "roots": graph["roots"],
             "selectedRoot": None,
             "chainSummary": {
                 "root": None,
                 "nodeCount": len(nodes),
                 "leafCount": leaf_count,
-                "unusedRootCount": len(GRAPH["unused_roots_list"]),
+                "unusedRootCount": len(graph["unused_roots_list"]),
             },
         }
 
-    if root not in GRAPH["nodes"]:
+    if root not in graph["nodes"]:
         raise KeyError(root)
 
     visited: Set[str] = set()
@@ -181,28 +310,28 @@ def build_subgraph(root: Optional[str]) -> Dict[str, object]:
         if current in visited:
             continue
         visited.add(current)
-        for dependency in GRAPH["dependencies"].get(current, []):
+        for dependency in graph["dependencies"].get(current, []):
             if dependency not in visited:
                 queue.append(dependency)
 
-    nodes = [GRAPH["nodes"][name] for name in visited]
-    edges = [edge for edge in GRAPH["edges"] if edge["source"] in visited and edge["target"] in visited]
+    nodes = [graph["nodes"][name] for name in visited]
+    edges = [edge for edge in graph["edges"] if edge["source"] in visited and edge["target"] in visited]
 
     external_referencers: Set[str] = set()
     externally_referenced_nodes = 0
     for node_name in visited:
-        dependents = GRAPH["nodes"][node_name]["dependents"]
+        dependents = graph["nodes"][node_name]["dependents"]
         outside_dependents = [dependent for dependent in dependents if dependent not in visited]
         if outside_dependents:
             externally_referenced_nodes += 1
             external_referencers.update(outside_dependents)
 
-    leaf_count = GRAPH["chain_leaf_counts"].get(root, 0)
+    leaf_count = graph["chain_leaf_counts"].get(root, 0)
     chain_summary = {
         "root": root,
         "nodeCount": len(nodes),
         "leafCount": leaf_count,
-        "isUnused": root in GRAPH["unused_roots_lookup"],
+        "isUnused": root in graph["unused_roots_lookup"],
         "externallyReferencedNodes": externally_referenced_nodes,
         "externalReferencerCount": len(external_referencers),
     }
@@ -210,7 +339,7 @@ def build_subgraph(root: Optional[str]) -> Dict[str, object]:
     return {
         "nodes": nodes,
         "edges": edges,
-        "roots": GRAPH["roots"],
+        "roots": graph["roots"],
         "selectedRoot": root,
         "isUnusedChain": chain_summary["isUnused"],
         "chainSummary": chain_summary,
@@ -225,8 +354,9 @@ class GraphRequestHandler(SimpleHTTPRequestHandler):
         if parsed_url.path == "/graph-data":
             params = parse_qs(parsed_url.query)
             root = params.get("root", [None])[0]
+            exclude_spring = _parse_bool((params.get("excludeSpring") or [None])[0])
             try:
-                payload = build_subgraph(root)
+                payload = build_subgraph(root, exclude_spring=exclude_spring)
             except KeyError:
                 self.send_error(HTTPStatus.NOT_FOUND, f"Unknown bean '{root}'")
                 return
@@ -240,9 +370,12 @@ class GraphRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_url.path == "/roots":
+            params = parse_qs(parsed_url.query)
+            exclude_spring = _parse_bool((params.get("excludeSpring") or [None])[0])
+            graph = get_graph(exclude_spring)
             payload = {
-                "roots": GRAPH["roots"],
-                "unusedChains": GRAPH["unused_roots_list"],
+                "roots": graph["roots"],
+                "unusedChains": graph["unused_roots_list"],
             }
             response = json.dumps(payload).encode("utf-8")
             self.send_response(HTTPStatus.OK)
