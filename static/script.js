@@ -10,6 +10,8 @@ const state = {
   labelSelection: null,
   nodeById: new Map(),
   highlightedNode: null,
+  unusedChains: [],
+  chainSummary: null,
 };
 
 const selectors = {
@@ -23,7 +25,10 @@ const selectors = {
   statNodes: () => document.getElementById('stat-nodes'),
   statEdges: () => document.getElementById('stat-edges'),
   statRoots: () => document.getElementById('stat-roots'),
+  statUnused: () => document.getElementById('stat-unused'),
   details: () => document.getElementById('details'),
+  unusedList: () => document.getElementById('unused-chains-list'),
+  chainSummary: () => document.getElementById('chain-summary'),
 };
 
 const API_BASE = determineApiBase();
@@ -98,7 +103,14 @@ async function loadRoots() {
     }
     const data = await response.json();
     state.roots = data.roots || [];
+    state.unusedChains = data.unusedChains || [];
     populateRootSelect(state.roots);
+    renderUnusedChains();
+    const unusedCountEl = selectors.statUnused();
+    if (unusedCountEl) {
+      unusedCountEl.textContent = state.unusedChains.length.toLocaleString('zh-CN');
+    }
+    updateChainSummary();
     if (state.roots.length) {
       setStatus('请选择一个最外层端点并点击“加载链路”。', 'info');
     } else {
@@ -161,9 +173,27 @@ async function loadGraph(root) {
     const data = await response.json();
     state.graphData = data;
     state.currentRoot = root || null;
+    state.chainSummary = data.chainSummary || null;
     buildGraph(data);
     updateStats(data);
-    setStatus(`已加载 ${rootLabel}，共 ${data.nodes.length} 个节点。`, 'success');
+    updateChainSummary();
+    renderUnusedChains();
+    const messageParts = [`已加载 ${rootLabel}，共 ${data.nodes.length} 个节点。`];
+    if (data.isUnusedChain) {
+      messageParts.push('该链路未被其他链路引用。');
+    } else if (root && data.chainSummary) {
+      const summary = data.chainSummary;
+      if (summary.externalReferencerCount) {
+        messageParts.push(
+          `有 ${summary.externallyReferencedNodes.toLocaleString('zh-CN')} 个节点被其他链路引用（${summary.externalReferencerCount.toLocaleString('zh-CN')} 个引用来源）。`,
+        );
+      }
+    } else if (!root && state.unusedChains.length) {
+      messageParts.push(
+        `当前共有 ${state.unusedChains.length.toLocaleString('zh-CN')} 个起点的链路未被其他链路引用，可在右侧列表中查看。`,
+      );
+    }
+    setStatus(messageParts.join(' '), 'success');
   } catch (error) {
     console.error(error);
     setStatus('加载链路数据失败，请查看控制台日志。', 'error');
@@ -331,6 +361,98 @@ function updateStats(data) {
   selectors.statNodes().textContent = data.nodes.length.toLocaleString('zh-CN');
   selectors.statEdges().textContent = data.edges.length.toLocaleString('zh-CN');
   selectors.statRoots().textContent = (data.roots || []).length.toLocaleString('zh-CN');
+  const unusedCountEl = selectors.statUnused();
+  if (unusedCountEl) {
+    unusedCountEl.textContent = state.unusedChains.length.toLocaleString('zh-CN');
+  }
+}
+
+function renderUnusedChains() {
+  const container = selectors.unusedList();
+  if (!container) {
+    return;
+  }
+
+  const chains = state.unusedChains || [];
+  if (!chains.length) {
+    container.innerHTML = '<p class="empty">暂未发现完全未被引用的链路。</p>';
+    return;
+  }
+
+  const list = document.createElement('ul');
+  list.className = 'unused-list';
+
+  chains.forEach((info) => {
+    const item = document.createElement('li');
+    if (state.currentRoot === info.root) {
+      item.classList.add('active');
+    }
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'link';
+    button.textContent = info.root;
+    button.addEventListener('click', () => {
+      const select = selectors.rootSelect();
+      if (select) {
+        select.value = info.root;
+      }
+      loadGraph(info.root);
+    });
+
+    const meta = document.createElement('span');
+    meta.className = 'meta';
+    const nodeCountLabel = Number(info.nodeCount || 0).toLocaleString('zh-CN');
+    const leafCountLabel = Number(info.leafCount || 0).toLocaleString('zh-CN');
+    meta.textContent = `节点 ${nodeCountLabel} · 终点 ${leafCountLabel}`;
+
+    item.append(button, meta);
+    list.appendChild(item);
+  });
+
+  container.innerHTML = '';
+  container.appendChild(list);
+}
+
+function updateChainSummary() {
+  const panel = selectors.chainSummary();
+  if (!panel) {
+    return;
+  }
+
+  const summary = state.chainSummary;
+  if (!summary) {
+    panel.innerHTML = '<h2>链路信息</h2><p>加载起点后将显示链路概览。</p>';
+    return;
+  }
+
+  if (!summary.root) {
+    panel.innerHTML = `
+      <h2>链路信息</h2>
+      <p>当前查看全部 ${summary.nodeCount.toLocaleString('zh-CN')} 个节点。</p>
+      <p>链路终点共 ${summary.leafCount.toLocaleString('zh-CN')} 个。</p>
+      <p>未被其他链路使用的起点数量：${state.unusedChains.length.toLocaleString('zh-CN')}。</p>
+    `;
+    return;
+  }
+
+  const statusClass = summary.isUnused ? 'unused' : 'used';
+  let statusText = '';
+  if (summary.isUnused) {
+    statusText = '该链路未被其他链路引用，可重点排查是否仍需保留。';
+  } else if (summary.externalReferencerCount) {
+    statusText = `有 ${summary.externallyReferencedNodes.toLocaleString('zh-CN')} 个节点被其他链路引用（${summary.externalReferencerCount.toLocaleString('zh-CN')} 个引用来源）。`;
+  } else {
+    statusText = '该链路存在外部引用。';
+  }
+
+  panel.innerHTML = `
+    <h2>链路信息</h2>
+    <p><strong>当前起点：</strong>${summary.root}</p>
+    <p><strong>节点数：</strong>${summary.nodeCount.toLocaleString('zh-CN')}</p>
+    <p><strong>链路终点：</strong>${summary.leafCount.toLocaleString('zh-CN')}</p>
+    <p class="chain-status ${statusClass}">${statusText}</p>
+  `;
 }
 
 function handleSearch() {

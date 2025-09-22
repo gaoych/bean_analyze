@@ -50,6 +50,20 @@
             <p><strong>节点数：</strong><span id="stat-nodes">0</span></p>
             <p><strong>依赖关系：</strong><span id="stat-edges">0</span></p>
             <p><strong>起点数量：</strong><span id="stat-roots">0</span></p>
+            <p><strong>未被使用的起点：</strong><span id="stat-unused">0</span></p>
+          </section>
+          <section id="chain-summary">
+            <h2>链路信息</h2>
+            <p>加载起点后将显示链路概览。</p>
+          </section>
+          <section id="unused-chains">
+            <h2>未被其他链路引用的起点</h2>
+            <p class="description">
+              以下起点的链路未被其他 Bean 引用，可点击名称快速加载并排查是否仍需保留。
+            </p>
+            <div id="unused-chains-list">
+              <p class="empty">正在分析未使用的链路…</p>
+            </div>
           </section>
           <section id="details">
             <h2>节点详情</h2>

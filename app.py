@@ -99,11 +99,53 @@ def load_graph() -> Dict[str, object]:
 
     roots = sorted(name for name, node in nodes.items() if node["isRoot"])
 
+    chain_leaf_counts: Dict[str, int] = {}
+    chain_nodes_map: Dict[str, Set[str]] = {}
+    unused_roots: List[Dict[str, object]] = []
+    unused_roots_lookup: Dict[str, Dict[str, object]] = {}
+
+    for root in roots:
+        visited: Set[str] = set()
+        queue: deque[str] = deque([root])
+
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            for dependency in dependencies_map.get(current, []):
+                if dependency not in visited:
+                    queue.append(dependency)
+
+        chain_nodes_map[root] = visited
+        leaf_count = sum(1 for node in visited if not dependencies_map.get(node))
+        chain_leaf_counts[root] = leaf_count
+
+        has_external_usage = False
+        for node_name in visited:
+            dependents = incoming_map.get(node_name, set())
+            if any(dependent not in visited for dependent in dependents):
+                has_external_usage = True
+                break
+
+        if not has_external_usage:
+            info = {"root": root, "nodeCount": len(visited), "leafCount": leaf_count}
+            unused_roots.append(info)
+            unused_roots_lookup[root] = info
+
+    unused_roots.sort(key=lambda item: (-item["nodeCount"], item["root"]))
+
+
     return {
         "nodes": nodes,
         "edges": edges,
         "roots": roots,
         "dependencies": dependencies_map,
+        "incoming": incoming_map,
+        "chain_nodes": chain_nodes_map,
+        "chain_leaf_counts": chain_leaf_counts,
+        "unused_roots_list": unused_roots,
+        "unused_roots_lookup": unused_roots_lookup,
     }
 
 
@@ -113,10 +155,19 @@ GRAPH = load_graph()
 def build_subgraph(root: Optional[str]) -> Dict[str, object]:
     """Return the graph filtered to nodes reachable from the given root."""
     if not root or root.lower() == "all":
+        nodes = list(GRAPH["nodes"].values())
+        leaf_count = sum(1 for node in nodes if not node["hasDependencies"])
         return {
-            "nodes": list(GRAPH["nodes"].values()),
+            "nodes": nodes,
             "edges": GRAPH["edges"],
             "roots": GRAPH["roots"],
+            "selectedRoot": None,
+            "chainSummary": {
+                "root": None,
+                "nodeCount": len(nodes),
+                "leafCount": leaf_count,
+                "unusedRootCount": len(GRAPH["unused_roots_list"]),
+            },
         }
 
     if root not in GRAPH["nodes"]:
@@ -136,11 +187,33 @@ def build_subgraph(root: Optional[str]) -> Dict[str, object]:
 
     nodes = [GRAPH["nodes"][name] for name in visited]
     edges = [edge for edge in GRAPH["edges"] if edge["source"] in visited and edge["target"] in visited]
+
+    external_referencers: Set[str] = set()
+    externally_referenced_nodes = 0
+    for node_name in visited:
+        dependents = GRAPH["nodes"][node_name]["dependents"]
+        outside_dependents = [dependent for dependent in dependents if dependent not in visited]
+        if outside_dependents:
+            externally_referenced_nodes += 1
+            external_referencers.update(outside_dependents)
+
+    leaf_count = GRAPH["chain_leaf_counts"].get(root, 0)
+    chain_summary = {
+        "root": root,
+        "nodeCount": len(nodes),
+        "leafCount": leaf_count,
+        "isUnused": root in GRAPH["unused_roots_lookup"],
+        "externallyReferencedNodes": externally_referenced_nodes,
+        "externalReferencerCount": len(external_referencers),
+    }
+
     return {
         "nodes": nodes,
         "edges": edges,
         "roots": GRAPH["roots"],
         "selectedRoot": root,
+        "isUnusedChain": chain_summary["isUnused"],
+        "chainSummary": chain_summary,
     }
 
 
@@ -167,7 +240,11 @@ class GraphRequestHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed_url.path == "/roots":
-            response = json.dumps({"roots": GRAPH["roots"]}).encode("utf-8")
+            payload = {
+                "roots": GRAPH["roots"],
+                "unusedChains": GRAPH["unused_roots_list"],
+            }
+            response = json.dumps(payload).encode("utf-8")
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(response)))
