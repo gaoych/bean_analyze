@@ -42,6 +42,16 @@
             <input id="exclude-spring" type="checkbox" /> 排除 Spring 自身 Bean
           </label>
         </div>
+        <div class="control-group toggle-group third-party-group">
+          <label class="checkbox">
+            <input id="exclude-third-party" type="checkbox" /> 排除三方包 Bean
+          </label>
+          <div class="third-party-options" id="third-party-package-container" hidden>
+            <p class="description">选择需要排除的三方包（默认全选）：</p>
+            <select id="third-party-packages" multiple size="4"></select>
+            <p class="hint package-hint">按住 Ctrl/Cmd 可多选；不选择任何条目时将排除全部三方包。</p>
+          </div>
+        </div>
         <div class="hint">
           <span class="legend-color red"></span>
           <span>红色节点表示没有依赖的 Bean；</span>

@@ -9,7 +9,7 @@ from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingTCPServer
-from typing import Dict, Iterable, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -22,6 +22,22 @@ def _normalize_dependency_list(raw: Optional[Iterable[str]]) -> List[str]:
         return []
     return [item for item in raw if item]
 
+
+def _infer_third_party_package(bean: Dict[str, object]) -> Optional[str]:
+    """Infer a displayable package identifier for third-party beans."""
+
+    candidate = bean.get("type") or bean.get("name") or ""
+    if not isinstance(candidate, str):
+        return None
+
+    parts = [part for part in candidate.split(".") if part]
+    if len(parts) >= 3:
+        return ".".join(parts[:3])
+    if len(parts) >= 2:
+        return ".".join(parts[:2])
+    if parts:
+        return parts[0]
+    return None
 
 def load_graph() -> Dict[str, object]:
     """Build graph information from the bean description file."""
@@ -49,6 +65,8 @@ def load_graph() -> Dict[str, object]:
             (source_value and source_value.lower().startswith("spring"))
             or (name and name.startswith("org.springframework"))
         )
+        is_third_party = isinstance(source_value, str) and source_value == "Third Party Library"
+        third_party_package = _infer_third_party_package(bean) if is_third_party else None
 
         metadata_map[name] = {
             "name": name,
@@ -60,6 +78,8 @@ def load_graph() -> Dict[str, object]:
             "isAdditionalBean": bean.get("isAdditionalBean", False),
             "additionalBeanSource": bean.get("additionalBeanSource", ""),
             "isSpringBean": is_spring,
+            "isThirdPartyBean": is_third_party,
+            "thirdPartyPackage": third_party_package,
         }
 
     # Add placeholder nodes for dependencies that do not have their own definitions.
@@ -78,7 +98,27 @@ def load_graph() -> Dict[str, object]:
                     "additionalBeanSource": "",
                     "missing": True,
                     "isSpringBean": False,
+                    "isThirdPartyBean": False,
+                    "thirdPartyPackage": None,
                 }
+
+    third_party_nodes: Set[str] = set()
+    third_party_package_to_nodes: Dict[str, Set[str]] = defaultdict(set)
+    node_to_third_party_package: Dict[str, Optional[str]] = {}
+
+    for bean_name, metadata in metadata_map.items():
+        package_name = metadata.get("thirdPartyPackage")
+        node_to_third_party_package[bean_name] = package_name
+        if metadata.get("isThirdPartyBean"):
+            third_party_nodes.add(bean_name)
+            if package_name:
+                third_party_package_to_nodes[package_name].add(bean_name)
+
+    third_party_packages_list = [
+        {"package": package, "beanCount": len(nodes)}
+        for package, nodes in third_party_package_to_nodes.items()
+    ]
+    third_party_packages_list.sort(key=lambda item: (-item["beanCount"], item["package"]))
 
     incoming_map: Dict[str, Set[str]] = defaultdict(set)
     for bean_name, dependencies in dependencies_map.items():
@@ -102,6 +142,8 @@ def load_graph() -> Dict[str, object]:
             "missing": metadata.get("missing", False),
             "metadata": metadata,
             "isSpringBean": metadata.get("isSpringBean", False),
+            "isThirdPartyBean": metadata.get("isThirdPartyBean", False),
+            "thirdPartyPackage": metadata.get("thirdPartyPackage"),
         }
         nodes[bean_name] = node
 
@@ -159,6 +201,13 @@ def load_graph() -> Dict[str, object]:
         "unused_roots_list": unused_roots,
         "unused_roots_lookup": unused_roots_lookup,
         "spring_nodes": spring_nodes,
+        "third_party_nodes": third_party_nodes,
+        "third_party_packages": third_party_packages_list,
+        "third_party_package_nodes": {
+            package: frozenset(node_names)
+            for package, node_names in third_party_package_to_nodes.items()
+        },
+        "node_third_party_package": node_to_third_party_package,
     }
 
 
@@ -172,14 +221,49 @@ def _parse_bool(value: Optional[str]) -> bool:
     normalized = value.strip().lower()
     return normalized in {"1", "true", "yes", "on"}
 
+def _parse_list(values: Optional[List[str]]) -> List[str]:
+    """Parse a comma-separated list from repeated query parameters."""
 
-def build_filtered_graph(exclude_spring: bool) -> Dict[str, object]:
+    if not values:
+        return []
+
+    parsed: List[str] = []
+    for value in values:
+        if value is None:
+            continue
+        for part in value.split(","):
+            item = part.strip()
+            if item:
+                parsed.append(item)
+    return parsed
+
+
+def build_filtered_graph(
+    exclude_spring: bool,
+    *,
+    exclude_third_party: bool = False,
+    third_party_packages: Optional[Iterable[str]] = None,
+) -> Dict[str, object]:
     """Return a graph view with optional filters applied."""
 
-    if not exclude_spring:
+    if not exclude_spring and not exclude_third_party:
         return GRAPH
 
-    excluded_nodes = GRAPH.get("spring_nodes", set())
+    excluded_nodes: Set[str] = set()
+
+    if exclude_spring:
+        excluded_nodes.update(GRAPH.get("spring_nodes", set()))
+
+    if exclude_third_party:
+        requested_packages = set(third_party_packages or [])
+        if requested_packages:
+            for package in requested_packages:
+                excluded_nodes.update(
+                    GRAPH["third_party_package_nodes"].get(package, set())
+                )
+        else:
+            excluded_nodes.update(GRAPH.get("third_party_nodes", set()))
+
     if not excluded_nodes:
         return GRAPH
 
@@ -214,6 +298,8 @@ def build_filtered_graph(exclude_spring: bool) -> Dict[str, object]:
             "missing": base.get("missing", False),
             "metadata": base.get("metadata", {}),
             "isSpringBean": base.get("isSpringBean", False),
+            "isThirdPartyBean": base.get("isThirdPartyBean", False),
+            "thirdPartyPackage": base.get("thirdPartyPackage"),
         }
         nodes[bean_name] = node
 
@@ -269,19 +355,41 @@ def build_filtered_graph(exclude_spring: bool) -> Dict[str, object]:
         "unused_roots_list": unused_roots,
         "unused_roots_lookup": unused_lookup,
         "spring_nodes": set(),
+        "third_party_nodes": set(),
+        "third_party_packages": GRAPH["third_party_packages"],
+        "third_party_package_nodes": GRAPH["third_party_package_nodes"],
+        "node_third_party_package": GRAPH["node_third_party_package"],
     }
 
 
-@lru_cache(maxsize=2)
-def get_graph(exclude_spring: bool) -> Dict[str, object]:
+@lru_cache(maxsize=32)
+def get_graph(
+    exclude_spring: bool,
+    exclude_third_party: bool,
+    third_party_packages: Tuple[str, ...],
+) -> Dict[str, object]:
     """Return cached graph data with optional filters applied."""
 
-    return build_filtered_graph(exclude_spring)
+    return build_filtered_graph(
+        exclude_spring,
+        exclude_third_party=exclude_third_party,
+        third_party_packages=third_party_packages,
+    )
 
 
-def build_subgraph(root: Optional[str], *, exclude_spring: bool = False) -> Dict[str, object]:
+def build_subgraph(
+    root: Optional[str],
+    *,
+    exclude_spring: bool = False,
+    exclude_third_party: bool = False,
+    third_party_packages: Optional[Iterable[str]] = None,
+) -> Dict[str, object]:
     """Return the graph filtered to nodes reachable from the given root."""
-    graph = get_graph(exclude_spring)
+
+    third_party_tuple: Tuple[str, ...] = tuple(
+        sorted(third_party_packages) if third_party_packages else ()
+    )
+    graph = get_graph(exclude_spring, exclude_third_party, third_party_tuple)
 
     if not root or root.lower() == "all":
         nodes = list(graph["nodes"].values())
@@ -297,6 +405,7 @@ def build_subgraph(root: Optional[str], *, exclude_spring: bool = False) -> Dict
                 "leafCount": leaf_count,
                 "unusedRootCount": len(graph["unused_roots_list"]),
             },
+            "thirdPartyPackages": graph["third_party_packages"],
         }
 
     if root not in graph["nodes"]:
@@ -343,6 +452,7 @@ def build_subgraph(root: Optional[str], *, exclude_spring: bool = False) -> Dict
         "selectedRoot": root,
         "isUnusedChain": chain_summary["isUnused"],
         "chainSummary": chain_summary,
+        "thirdPartyPackages": graph["third_party_packages"],
     }
 
 
@@ -355,8 +465,15 @@ class GraphRequestHandler(SimpleHTTPRequestHandler):
             params = parse_qs(parsed_url.query)
             root = params.get("root", [None])[0]
             exclude_spring = _parse_bool((params.get("excludeSpring") or [None])[0])
+            exclude_third_party = _parse_bool((params.get("excludeThirdParty") or [None])[0])
+            third_party_packages = _parse_list(params.get("thirdPartyPackages"))
             try:
-                payload = build_subgraph(root, exclude_spring=exclude_spring)
+                payload = build_subgraph(
+                    root,
+                    exclude_spring=exclude_spring,
+                    exclude_third_party=exclude_third_party,
+                    third_party_packages=third_party_packages,
+                )
             except KeyError:
                 self.send_error(HTTPStatus.NOT_FOUND, f"Unknown bean '{root}'")
                 return
@@ -372,10 +489,15 @@ class GraphRequestHandler(SimpleHTTPRequestHandler):
         if parsed_url.path == "/roots":
             params = parse_qs(parsed_url.query)
             exclude_spring = _parse_bool((params.get("excludeSpring") or [None])[0])
-            graph = get_graph(exclude_spring)
+            exclude_third_party = _parse_bool((params.get("excludeThirdParty") or [None])[0])
+            third_party_packages = tuple(
+                sorted(_parse_list(params.get("thirdPartyPackages")))
+            )
+            graph = get_graph(exclude_spring, exclude_third_party, third_party_packages)
             payload = {
                 "roots": graph["roots"],
                 "unusedChains": graph["unused_roots_list"],
+                "thirdPartyPackages": graph["third_party_packages"],
             }
             response = json.dumps(payload).encode("utf-8")
             self.send_response(HTTPStatus.OK)

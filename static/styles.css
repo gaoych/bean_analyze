@@ -159,6 +159,35 @@ main {
   height: 1.1rem;
 }
 
+.third-party-group {
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+
+.third-party-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  width: min(320px, 100%);
+}
+
+.third-party-options select {
+  min-width: 220px;
+  padding: 0.4rem 0.5rem;
+}
+
+.third-party-options .description {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.third-party-options .package-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
 .controls .hint {
   display: flex;
   align-items: center;

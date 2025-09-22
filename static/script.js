@@ -13,6 +13,9 @@ const state = {
   unusedChains: [],
   chainSummary: null,
   excludeSpring: false,
+  excludeThirdParty: false,
+  availableThirdPartyPackages: [],
+  selectedThirdPartyPackages: [],
   searchTerm: '',
   searchMatches: [],
   searchIndex: -1,
@@ -27,6 +30,9 @@ const selectors = {
   searchPrevButton: () => document.getElementById('search-prev'),
   searchNextButton: () => document.getElementById('search-next'),
   excludeSpringCheckbox: () => document.getElementById('exclude-spring'),
+  excludeThirdPartyCheckbox: () => document.getElementById('exclude-third-party'),
+  thirdPartyPackageContainer: () => document.getElementById('third-party-package-container'),
+  thirdPartyPackageSelect: () => document.getElementById('third-party-packages'),
   statusMessage: () => document.getElementById('status-message'),
   placeholder: () => document.getElementById('graph-placeholder'),
   statNodes: () => document.getElementById('stat-nodes'),
@@ -88,6 +94,12 @@ function buildGraphDataUrl(root) {
   if (state.excludeSpring) {
     params.set('excludeSpring', 'true');
   }
+  if (state.excludeThirdParty) {
+    params.set('excludeThirdParty', 'true');
+    if (state.selectedThirdPartyPackages.length) {
+      params.set('thirdPartyPackages', state.selectedThirdPartyPackages.join(','));
+    }
+  }
   return buildApiUrl(`/graph-data?${params.toString()}`);
 }
 
@@ -120,41 +132,45 @@ function setupUI() {
   if (excludeCheckbox) {
     excludeCheckbox.addEventListener('change', async (event) => {
       state.excludeSpring = event.target.checked;
-      const previousRoot = state.currentRoot;
-      const loaded = await loadRoots({ preserveSelection: true });
-      if (!loaded) {
+      await reloadDataAfterFilterChange({
+        messageWhenCleared: state.excludeSpring
+          ? '当前起点属于 Spring Bean，已被过滤。请选择其他起点。'
+          : '已重新包含 Spring Bean，请选择需要查看的起点。',
+        statusLevel: state.excludeSpring ? 'warn' : 'info',
+      });
+    });
+  }
+
+  const thirdPartySelect = selectors.thirdPartyPackageSelect();
+  if (thirdPartySelect) {
+    thirdPartySelect.disabled = true;
+    thirdPartySelect.addEventListener('change', async () => {
+      const selected = Array.from(thirdPartySelect.selectedOptions).map((option) => option.value);
+      state.selectedThirdPartyPackages = selected;
+      if (!state.excludeThirdParty) {
         return;
       }
+      await reloadDataAfterFilterChange({
+        messageWhenCleared: '当前起点属于被过滤的三方包，请选择其他起点。',
+        statusLevel: 'warn',
+      });
+    });
+  }
 
-      const select = selectors.rootSelect();
-      if (previousRoot && state.roots.includes(previousRoot)) {
-        if (select) {
-          select.value = previousRoot;
-        }
-        loadGraph(previousRoot);
-        return;
+  const thirdPartyCheckbox = selectors.excludeThirdPartyCheckbox();
+  if (thirdPartyCheckbox) {
+    thirdPartyCheckbox.addEventListener('change', async (event) => {
+      state.excludeThirdParty = event.target.checked;
+      if (state.excludeThirdParty && !state.selectedThirdPartyPackages.length) {
+        state.selectedThirdPartyPackages = getAllThirdPartyPackageIds();
       }
-
-      if (!previousRoot && state.graphData) {
-        loadGraph(null);
-        return;
-      }
-
-      state.currentRoot = null;
-      state.graphData = null;
-      if (select) {
-        select.value = '';
-      }
-      clearGraphView('当前过滤条件下未加载任何链路，请选择起点。');
-      state.chainSummary = null;
-      updateChainSummary();
-      resetStatsDisplay();
-      renderUnusedChains();
-      if (state.excludeSpring) {
-        setStatus('当前起点属于 Spring Bean，已被过滤。请选择其他起点。', 'warn');
-      } else {
-        setStatus('已重新包含 Spring Bean，请选择需要查看的起点。', 'info');
-      }
+      renderThirdPartyPackageOptions();
+      await reloadDataAfterFilterChange({
+        messageWhenCleared: state.excludeThirdParty
+          ? '当前起点属于被过滤的三方包，请选择其他起点。'
+          : '已重新包含三方包 Bean，请选择需要查看的起点。',
+        statusLevel: state.excludeThirdParty ? 'warn' : 'info',
+      });
     });
   }
 
@@ -171,6 +187,12 @@ async function loadRoots(options = {}) {
     if (state.excludeSpring) {
       params.set('excludeSpring', 'true');
     }
+    if (state.excludeThirdParty) {
+      params.set('excludeThirdParty', 'true');
+      if (state.selectedThirdPartyPackages.length) {
+        params.set('thirdPartyPackages', state.selectedThirdPartyPackages.join(','));
+      }
+    }
     const url = params.toString() ? `/roots?${params.toString()}` : '/roots';
     const response = await fetch(buildApiUrl(url));
     if (!response.ok) {
@@ -179,6 +201,8 @@ async function loadRoots(options = {}) {
     const data = await response.json();
     state.roots = data.roots || [];
     state.unusedChains = data.unusedChains || [];
+    state.availableThirdPartyPackages = data.thirdPartyPackages || [];
+    renderThirdPartyPackageOptions();
     populateRootSelect(state.roots);
     if (select && preserveSelection && previousValue && state.roots.includes(previousValue)) {
       select.value = previousValue;
@@ -215,6 +239,8 @@ async function loadRoots(options = {}) {
     }
     state.roots = [];
     state.unusedChains = [];
+    state.availableThirdPartyPackages = [];
+    renderThirdPartyPackageOptions();
     updateSearchNavButtons();
     resetStatsDisplay();
     return false;
@@ -247,6 +273,99 @@ function populateRootSelect(roots) {
   }
 }
 
+function getAllThirdPartyPackageIds() {
+  const packages = state.availableThirdPartyPackages || [];
+  return packages.map((pkg) => pkg.package || pkg.name || pkg.id).filter(Boolean);
+}
+
+function renderThirdPartyPackageOptions() {
+  const container = selectors.thirdPartyPackageContainer();
+  const select = selectors.thirdPartyPackageSelect();
+  if (!container || !select) {
+    return;
+  }
+
+  const packages = state.availableThirdPartyPackages || [];
+  container.hidden = !packages.length;
+
+  const availableValues = packages
+    .map((pkg) => pkg.package || pkg.name || pkg.id)
+    .filter(Boolean);
+
+  if (state.selectedThirdPartyPackages.length) {
+    state.selectedThirdPartyPackages = state.selectedThirdPartyPackages.filter((value) =>
+      availableValues.includes(value),
+    );
+  }
+
+  select.innerHTML = '';
+
+  if (!packages.length) {
+    select.disabled = true;
+    return;
+  }
+
+  select.disabled = false;
+  select.size = Math.min(8, Math.max(4, packages.length));
+
+  const selectionSet = new Set(state.selectedThirdPartyPackages);
+
+  packages.forEach((pkg) => {
+    const value = pkg.package || pkg.name || pkg.id;
+    if (!value) {
+      return;
+    }
+    const option = document.createElement('option');
+    option.value = value;
+    const count = typeof pkg.beanCount === 'number' ? pkg.beanCount : undefined;
+    option.textContent =
+      count !== undefined
+        ? `${value}（${count.toLocaleString('zh-CN')} 个 Bean）`
+        : value;
+    option.selected = selectionSet.has(value);
+    select.appendChild(option);
+  });
+}
+
+async function reloadDataAfterFilterChange(options = {}) {
+  const { messageWhenCleared, statusLevel = 'warn' } = options;
+  const previousRoot = state.currentRoot;
+  const hadFullGraph = !previousRoot && Boolean(state.graphData);
+
+  const loaded = await loadRoots({ preserveSelection: true });
+  if (!loaded) {
+    return;
+  }
+
+  const select = selectors.rootSelect();
+  if (previousRoot && state.roots.includes(previousRoot)) {
+    if (select) {
+      select.value = previousRoot;
+    }
+    await loadGraph(previousRoot);
+    return;
+  }
+
+  if (!previousRoot && hadFullGraph) {
+    await loadGraph(null);
+    return;
+  }
+
+  state.currentRoot = null;
+  state.graphData = null;
+  if (select) {
+    select.value = '';
+  }
+  clearGraphView('当前过滤条件下未加载任何链路，请选择起点。');
+  state.chainSummary = null;
+  updateChainSummary();
+  resetStatsDisplay();
+  renderUnusedChains();
+  if (messageWhenCleared) {
+    setStatus(messageWhenCleared, statusLevel);
+  }
+}
+
 async function loadGraph(root) {
   const rootLabel = root ? `起点 ${root}` : '全部节点';
   setStatus(`正在加载 ${rootLabel} 的数据…`, 'info');
@@ -264,6 +383,10 @@ async function loadGraph(root) {
     state.graphData = data;
     state.currentRoot = root || null;
     state.chainSummary = data.chainSummary || null;
+    if (Array.isArray(data.thirdPartyPackages)) {
+      state.availableThirdPartyPackages = data.thirdPartyPackages;
+      renderThirdPartyPackageOptions();
+    }
     buildGraph(data);
     updateStats(data);
     updateChainSummary();
@@ -756,6 +879,9 @@ function showDetails(node) {
     <p><strong>类型：</strong>${meta.type || '未知'}</p>
     <p><strong>Scope：</strong>${meta.scope || '未知'}</p>
     <p><strong>来源：</strong>${meta.source || '未知'}</p>
+    <p><strong>是否三方包：</strong>${
+      meta.isThirdPartyBean ? `是（${meta.thirdPartyPackage || '未识别包'}）` : '否'
+    }</p>
     <p><strong>定义位置：</strong>${meta.definitionSource || '未知'}</p>
     <p><strong>分类：</strong>${(meta.categories || []).join(', ') || '无'}</p>
     <p><strong>是否附加 Bean：</strong>${meta.isAdditionalBean ? '是' : '否'}</p>
