@@ -39,7 +39,6 @@ def _infer_third_party_package(bean: Dict[str, object]) -> Optional[str]:
         return parts[0]
     return None
 
-
 def load_graph() -> Dict[str, object]:
     """Build graph information from the bean description file."""
     if not DATA_FILE.exists():
@@ -117,6 +116,7 @@ def load_graph() -> Dict[str, object]:
         node_to_third_party_package[bean_name] = package_name
         categories = tuple(metadata.get("categories", []) or [])
         node_to_categories[bean_name] = categories
+        
         if metadata.get("isThirdPartyBean"):
             third_party_nodes.add(bean_name)
             if package_name:
@@ -233,7 +233,6 @@ def load_graph() -> Dict[str, object]:
 
 GRAPH = load_graph()
 
-
 def _parse_bool(value: Optional[str]) -> bool:
     """Return True if the string represents a truthy value."""
 
@@ -241,7 +240,6 @@ def _parse_bool(value: Optional[str]) -> bool:
         return False
     normalized = value.strip().lower()
     return normalized in {"1", "true", "yes", "on"}
-
 
 def _parse_list(values: Optional[List[str]]) -> List[str]:
     """Parse a comma-separated list from repeated query parameters."""
